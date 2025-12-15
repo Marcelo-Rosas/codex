@@ -1,8 +1,31 @@
 import * as child_process from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 jest.mock("node:child_process", () => {
   const actual = jest.requireActual<typeof import("node:child_process")>("node:child_process");
-  return { ...actual, spawn: jest.fn(actual.spawn) };
+  const spawnMock = jest.fn(
+    (command: string, args: ReadonlyArray<string> = [], options?: child_process.SpawnOptions) => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const stdin = new PassThrough();
+      const child = new EventEmitter() as child_process.ChildProcess;
+      child.stdout = stdout;
+      child.stderr = stderr;
+      child.stdin = stdin;
+      Object.defineProperty(child, "killed", { value: false });
+
+      queueMicrotask(() => {
+        stdout.end();
+        stderr.end();
+        child.emit("exit", 0);
+      });
+
+      return child;
+    },
+  );
+
+  return { ...actual, spawn: spawnMock };
 });
 
 const actualChildProcess =
@@ -14,24 +37,31 @@ export function codexExecSpy(): {
   envs: (Record<string, string> | undefined)[];
   restore: () => void;
 } {
-  const previousImplementation = spawnMock.getMockImplementation() ?? actualChildProcess.spawn;
   const args: string[][] = [];
   const envs: (Record<string, string> | undefined)[] = [];
 
-  spawnMock.mockImplementation(((...spawnArgs: Parameters<typeof child_process.spawn>) => {
-    const commandArgs = spawnArgs[1];
-    args.push(Array.isArray(commandArgs) ? [...commandArgs] : []);
-    const options = spawnArgs[2] as child_process.SpawnOptions | undefined;
-    envs.push(options?.env as Record<string, string> | undefined);
-    return previousImplementation(...spawnArgs);
-  }) as typeof actualChildProcess.spawn);
+  const baseImplementation = spawnMock.getMockImplementation();
+  if (!baseImplementation) {
+    throw new Error("Spawn mock not initialized");
+  }
+
+  spawnMock.mockImplementation(((
+    command: string,
+    commandArgs?: ReadonlyArray<string>,
+    options?: child_process.SpawnOptions,
+  ) => {
+    const safeArgs = Array.isArray(commandArgs) ? [...commandArgs] : [];
+    args.push(safeArgs);
+    envs.push((options?.env as Record<string, string> | undefined) ?? undefined);
+    return (baseImplementation as typeof actualChildProcess.spawn)(command, safeArgs, options ?? {});
+  }) as unknown as typeof actualChildProcess.spawn);
 
   return {
     args,
     envs,
     restore: () => {
       spawnMock.mockClear();
-      spawnMock.mockImplementation(previousImplementation);
+      spawnMock.mockImplementation(baseImplementation);
     },
   };
 }

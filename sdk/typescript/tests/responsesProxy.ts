@@ -49,6 +49,8 @@ export type ResponsesApiRequest = {
   text?: {
     format?: Record<string, unknown>;
   };
+  images?: string[];
+  config?: Record<string, unknown>;
 };
 
 export type RecordedRequest = {

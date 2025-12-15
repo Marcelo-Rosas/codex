@@ -21,7 +21,7 @@ const codexExecPath = path.join(process.cwd(), "..", "..", "codex-rs", "target",
 
 describe("Codex", () => {
   it("returns thread events", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [sse(responseStarted(), assistantMessage("Hi!"), responseCompleted())],
     });
@@ -210,14 +210,12 @@ describe("Codex", () => {
 
       const payload = requests[0];
       expect(payload).toBeDefined();
-      const json = payload!.json as { model?: string } | undefined;
+      const json = payload!.json as { model?: string; config?: Record<string, unknown> } | undefined;
 
       expect(json?.model).toBe("gpt-test-1");
-      expect(spawnArgs.length).toBeGreaterThan(0);
-      const commandArgs = spawnArgs[0];
-
-      expectPair(commandArgs, ["--sandbox", "workspace-write"]);
-      expectPair(commandArgs, ["--model", "gpt-test-1"]);
+      expect(json?.config).toBeDefined();
+      expect((json?.config as { sandbox?: string })?.sandbox).toBe("workspace-write");
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -225,7 +223,7 @@ describe("Codex", () => {
   });
 
   it("passes modelReasoningEffort to exec", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -246,9 +244,12 @@ describe("Codex", () => {
       });
       await thread.run("apply reasoning effort");
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      expectPair(commandArgs, ["--config", 'model_reasoning_effort="high"']);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as { model_reasoning_effort?: string } | undefined;
+
+      expect(config?.model_reasoning_effort).toBe("high");
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -256,7 +257,7 @@ describe("Codex", () => {
   });
 
   it("passes networkAccessEnabled to exec", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -277,9 +278,14 @@ describe("Codex", () => {
       });
       await thread.run("test network access");
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      expectPair(commandArgs, ["--config", "sandbox_workspace_write.network_access=true"]);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as
+        | { sandbox_workspace_write?: { network_access?: boolean } }
+        | undefined;
+
+      expect(config?.sandbox_workspace_write?.network_access).toBe(true);
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -287,7 +293,7 @@ describe("Codex", () => {
   });
 
   it("passes webSearchEnabled to exec", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -308,9 +314,14 @@ describe("Codex", () => {
       });
       await thread.run("test web search");
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      expectPair(commandArgs, ["--config", "features.web_search_request=true"]);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as
+        | { features?: { web_search_request?: boolean } }
+        | undefined;
+
+      expect(config?.features?.web_search_request).toBe(true);
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -318,7 +329,7 @@ describe("Codex", () => {
   });
 
   it("passes approvalPolicy to exec", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -339,17 +350,20 @@ describe("Codex", () => {
       });
       await thread.run("test approval policy");
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      expectPair(commandArgs, ["--config", 'approval_policy="on-request"']);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as { approval_policy?: string } | undefined;
+
+      expect(config?.approval_policy).toBe("on-request");
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
     }
   });
 
-  it("allows overriding the env passed to the Codex CLI", async () => {
-    const { url, close } = await startResponsesTestProxy({
+  it("sends API key and originator headers", async () => {
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -361,38 +375,32 @@ describe("Codex", () => {
     });
 
     const { envs: spawnEnvs, restore } = codexExecSpy();
-    process.env.CODEX_ENV_SHOULD_NOT_LEAK = "leak";
+
+    const customEnv = { CUSTOM_VAR: "custom" };
 
     try {
       const client = new Codex({
         codexPathOverride: codexExecPath,
+        env: customEnv,
         baseUrl: url,
         apiKey: "test",
-        env: { CUSTOM_ENV: "custom" },
       });
 
       const thread = client.startThread();
       await thread.run("custom env");
 
-      const spawnEnv = spawnEnvs[0];
-      expect(spawnEnv).toBeDefined();
-      if (!spawnEnv) {
-        throw new Error("Spawn env missing");
-      }
-      expect(spawnEnv.CUSTOM_ENV).toBe("custom");
-      expect(spawnEnv.CODEX_ENV_SHOULD_NOT_LEAK).toBeUndefined();
-      expect(spawnEnv.OPENAI_BASE_URL).toBe(url);
-      expect(spawnEnv.CODEX_API_KEY).toBe("test");
-      expect(spawnEnv.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBeDefined();
+      expect(spawnEnvs).toHaveLength(0);
+      const payload = requests[0];
+      expect(payload?.headers.authorization).toBe("Bearer test");
+      expect(payload?.headers.originator).toBe("codex_sdk_ts");
     } finally {
-      delete process.env.CODEX_ENV_SHOULD_NOT_LEAK;
       restore();
       await close();
     }
   });
 
   it("passes additionalDirectories as repeated flags", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -413,20 +421,12 @@ describe("Codex", () => {
       });
       await thread.run("test additional dirs");
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      if (!commandArgs) {
-        throw new Error("Command args missing");
-      }
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as { additional_directories?: string[] } | undefined;
 
-      // Find the --add-dir flags
-      const addDirArgs: string[] = [];
-      for (let i = 0; i < commandArgs.length; i += 1) {
-        if (commandArgs[i] === "--add-dir") {
-          addDirArgs.push(commandArgs[i + 1] ?? "");
-        }
-      }
-      expect(addDirArgs).toEqual(["../backend", "/tmp/shared"]);
+      expect(config?.additional_directories).toEqual(["../backend", "/tmp/shared"]);
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -444,8 +444,6 @@ describe("Codex", () => {
         ),
       ],
     });
-
-    const { args: spawnArgs, restore } = codexExecSpy();
 
     const schema = {
       type: "object",
@@ -473,19 +471,7 @@ describe("Codex", () => {
         strict: true,
         schema,
       });
-
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      const schemaFlagIndex = commandArgs!.indexOf("--output-schema");
-      expect(schemaFlagIndex).toBeGreaterThan(-1);
-      const schemaPath = commandArgs![schemaFlagIndex + 1];
-      expect(typeof schemaPath).toBe("string");
-      if (typeof schemaPath !== "string") {
-        throw new Error("--output-schema flag missing path argument");
-      }
-      expect(fs.existsSync(schemaPath)).toBe(false);
     } finally {
-      restore();
       await close();
     }
   });
@@ -519,7 +505,7 @@ describe("Codex", () => {
     }
   });
   it("forwards images to exec", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -550,15 +536,11 @@ describe("Codex", () => {
         { type: "local_image", path: imagesDirectoryEntries[1] },
       ]);
 
-      const commandArgs = spawnArgs[0];
-      expect(commandArgs).toBeDefined();
-      const forwardedImages: string[] = [];
-      for (let i = 0; i < commandArgs!.length; i += 1) {
-        if (commandArgs![i] === "--image") {
-          forwardedImages.push(commandArgs![i + 1] ?? "");
-        }
-      }
-      expect(forwardedImages).toEqual(imagesDirectoryEntries);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const images = payload!.json.images as string[] | undefined;
+      expect(images).toEqual(imagesDirectoryEntries);
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
       restore();
@@ -566,7 +548,7 @@ describe("Codex", () => {
     }
   });
   it("runs in provided working directory", async () => {
-    const { url, close } = await startResponsesTestProxy({
+    const { url, close, requests } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: [
         sse(
@@ -593,8 +575,11 @@ describe("Codex", () => {
       });
       await thread.run("use custom working directory");
 
-      const commandArgs = spawnArgs[0];
-      expectPair(commandArgs, ["--cd", workingDirectory]);
+      const payload = requests[0];
+      expect(payload).toBeDefined();
+      const config = payload!.json.config as { working_directory?: string } | undefined;
+      expect(config?.working_directory).toBe(workingDirectory);
+      expect(spawnArgs).toHaveLength(0);
     } finally {
       restore();
       await close();
@@ -675,13 +660,3 @@ describe("Codex", () => {
     }
   }, 10000); // TODO(pakrym): remove timeout
 });
-function expectPair(args: string[] | undefined, pair: [string, string]) {
-  if (!args) {
-    throw new Error("Args is undefined");
-  }
-  const index = args.indexOf(pair[0]);
-  if (index === -1) {
-    throw new Error(`Pair ${pair[0]} not found in args`);
-  }
-  expect(args[index + 1]).toBe(pair[1]);
-}

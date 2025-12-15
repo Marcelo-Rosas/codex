@@ -2,6 +2,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "@jest/globals";
 
+import "./codexExecSpy";
+
 import { Codex } from "../src/codex";
 
 import {
