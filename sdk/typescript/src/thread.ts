@@ -117,6 +117,7 @@ export class Thread {
     let finalResponse: string = "";
     let usage: Usage | null = null;
     let turnFailure: ThreadError | null = null;
+    let completed = false;
     for await (const event of generator) {
       if (event.type === "item.completed") {
         if (event.item.type === "agent_message") {
@@ -125,6 +126,7 @@ export class Thread {
         items.push(event.item);
       } else if (event.type === "turn.completed") {
         usage = event.usage;
+        completed = true;
       } else if (event.type === "turn.failed") {
         turnFailure = event.error;
         break;
@@ -132,6 +134,12 @@ export class Thread {
     }
     if (turnFailure) {
       throw new Error(turnFailure.message);
+    }
+    if (!completed) {
+      throw new Error("stream disconnected before completion: missing completion event");
+    }
+    if (turnOptions.signal?.aborted) {
+      throw new Error(String(turnOptions.signal.reason ?? "aborted"));
     }
     return { items, finalResponse, usage };
   }
