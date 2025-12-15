@@ -326,6 +326,17 @@ export class CodexExec {
     yield JSON.stringify({ type: "thread.started", thread_id: threadId });
     yield JSON.stringify({ type: "turn.started" });
 
+    if (!response.ok) {
+      const message = await response
+        .text()
+        .catch(() => "unexpected error while reading response body");
+      yield JSON.stringify({
+        type: "turn.failed",
+        error: { message: `request failed with status ${response.status}: ${message}` },
+      });
+      return;
+    }
+
     if (!response.body) {
       yield JSON.stringify({
         type: "turn.failed",
@@ -381,7 +392,9 @@ export class CodexExec {
       });
     }
 
-    this.histories.set(threadId, updatedHistory);
+    if (completed) {
+      this.histories.set(threadId, updatedHistory);
+    }
   }
 }
 
